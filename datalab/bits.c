@@ -294,7 +294,33 @@ int howManyBits(int x) {
  *   Rating: 4
  */
 unsigned floatScale2(unsigned uf) {
-  return 2;
+    unsigned sign, exp, frac;
+    sign = 0x80000000 & uf;
+    exp = (0x7f800000 & uf)>>23;
+    frac = 0x007fffff & uf;
+
+    // uf == 0
+    if (exp == 0 && frac == 0) {
+        return uf;
+    }
+    // uf is denormal
+    if (exp == 0 && frac != 0) {
+        if (frac>>22) {
+            return sign | ((exp+1)<<23) | (frac<<1);
+        } else {
+            return sign | exp<<23 | (frac<<1);
+        }
+    }
+    // uf is normal
+    if (exp != 0xff) {
+        if (exp == 0xfe) {
+            return sign | ((exp+1)<<23);
+        } else {
+            return sign | ((exp+1)<<23) | frac;
+        }
+    }
+    // uf == NaN
+    return uf;
 }
 /* 
  * floatFloat2Int - Return bit-level equivalent of expression (int) f
