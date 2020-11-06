@@ -335,7 +335,27 @@ unsigned floatScale2(unsigned uf) {
  *   Rating: 4
  */
 int floatFloat2Int(unsigned uf) {
-  return 2;
+    unsigned sign, exp, frac;
+    sign = 0x80000000 & uf;
+    exp = (0x7f800000 & uf)>>23;
+    frac = 0x007fffff & uf;
+
+    if (exp == 0) {
+        return 0;
+    } else if (exp == 255) {
+        return 0x80000000;
+    } else {
+        if (exp < 127) {
+            return 0;
+        } else if (exp > 157) {
+            return 0x80000000;
+        } else {
+            unsigned x;
+            frac = (1<<23)|frac;
+            x = exp > 150 ? frac<<(exp-150) : frac>>(150-exp);
+            return sign?(~x+1):x;
+        }
+    }
 }
 /* 
  * floatPower2 - Return bit-level equivalent of the expression 2.0^x
@@ -351,5 +371,13 @@ int floatFloat2Int(unsigned uf) {
  *   Rating: 4
  */
 unsigned floatPower2(int x) {
-    return 2;
+    if (x < -149) {
+        return 0;
+    } else if (x < -126) {
+        return 1<<(x + 149);
+    } else if (x < 128) {
+        return (x + 127)<<23;
+    } else {
+        return 0x7f800000;
+    }
 }
