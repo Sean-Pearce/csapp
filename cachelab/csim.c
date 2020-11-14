@@ -25,6 +25,8 @@ typedef struct CacheSet {
 
 CacheSet *create_cache(int S, int E);
 void handle_trace(CacheSet *cache, int verbose, int s, int b, int S, int E, char *fname, int *hit, int *miss, int *evictions);
+CacheLine *find_cacheline(CacheSet *cache, unsigned long tag); 
+void update_cacheline(CacheSet *cache, CacheLine *cl); 
 
 int main(int argc, char *argv[])
 {
@@ -91,10 +93,12 @@ int main(int argc, char *argv[])
     CacheSet *cache = create_cache(S, E);
 
     // handle trace file
-    int hit, miss, evictions;
-    handle_trace(cache, verbose, s, b, S, E, t, &hit, &miss, &evictions);
+    int hit = 0;
+    int miss = 0;
+    int eviction = 0;
+    handle_trace(cache, verbose, s, b, S, E, t, &hit, &miss, &eviction);
 
-    printSummary(hit, miss, evictions);
+    printSummary(hit, miss, eviction);
     return 0;
 }
 
@@ -111,12 +115,14 @@ CacheSet *create_cache(int S, int E)
             prev = &cachelines[j];
         }
         cachelines[E - 1].prev = prev;
+        cache[i].head = cachelines;
+        cache[i].tail = &cachelines[E - 1];
     }
 
     return cache;
 }
 
-void handle_trace(CacheSet *cache, int verbose, int s, int b, int S, int E, char *fname, int *hit, int *miss, int *evictions)
+void handle_trace(CacheSet *cache, int verbose, int s, int b, int S, int E, char *fname, int *hit, int *miss, int *eviction)
 {
     char *line = NULL;
     size_t len = 0;
@@ -132,6 +138,8 @@ void handle_trace(CacheSet *cache, int verbose, int s, int b, int S, int E, char
     unsigned long tag;
     unsigned long set;
     const unsigned long mask = (1 << s) - 1;
+    int mflag, eflag, hflag;
+    CacheLine *cl;
 
     while (getline(&line, &len, fp) != -1) {
         if (strlen(line) < 5 || line[0] != ' ') {
@@ -145,19 +153,72 @@ void handle_trace(CacheSet *cache, int verbose, int s, int b, int S, int E, char
         tag = addr >> (s + b);
         set = (addr >> b) & mask;
 
-        printf("%c %lx,%lx\n", op, tag, set);
+        mflag = 0;
+        eflag = 0;
+        hflag = 0;
 
         switch (op) {
         case 'M':
-            break;
+            hflag++;
+            // fall through
         case 'L':
-            break;
+            // fall through
         case 'S':
+            cl = find_cacheline(&cache[set], tag);
+            if (cl == NULL) {
+                mflag++;
+                cl = cache[set].tail;
+                if (cl->valid) {
+                    eflag++;
+                }
+                cl->valid = true;
+                cl->tag = tag;
+            } else {
+                hflag++;
+            }
+            update_cacheline(&cache[set], cl);
             break;
         default:
             continue;
         }
+
+        *miss += mflag;
+        *eviction += eflag;
+        *hit += hflag;
+
+        if (verbose) {
+            printf("%s%s%s%s\n", &line[1], mflag?" miss":"", eflag?" eviction":"", hflag?" hit":"");
+        }
     }
 
     fclose(fp);
+}
+
+CacheLine *find_cacheline(CacheSet *cache, unsigned long tag) {
+    CacheLine *p = cache->head;
+    while (p != NULL && p->valid == true) {
+        if (p->tag == tag) {
+            return p;
+        } else {
+            p = p->next;
+        }
+    }
+    return NULL;
+}
+
+void update_cacheline(CacheSet *cache, CacheLine *cl) {
+    if (cache->head == cl) {
+        return;
+    }
+
+    if (cache->tail == cl) {
+        cache->tail = cl->prev;
+    } else {
+        cl->next->prev = cl->prev;
+    }
+    cl->prev->next = cl->next;
+    cl->prev = NULL;
+    cl->next = cache->head;
+    cache->head->prev = cl;
+    cache->head = cl;
 }
