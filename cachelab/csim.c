@@ -1,7 +1,8 @@
-#include <stdlib.h>
-#include <getopt.h>
+#define  _GNU_SOURCE
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
+#include <getopt.h>
 #include <math.h>
 #include <string.h>
 
@@ -10,17 +11,20 @@
 #define false 0
 #define true 1
 
-typedef struct {
+typedef struct CacheLine {
+    struct CacheLine *prev;
+    struct CacheLine *next;
+    unsigned long tag;
+    unsigned valid;
+} CacheLine;
+
+typedef struct CacheSet {
     CacheLine *head;
     CacheLine *tail;
 } CacheSet;
 
-typedef struct {
-    CacheLine *prev;
-    CacheLine *next;
-    unsigned tag;
-    unsigned valid;
-} CacheLine;
+CacheSet *create_cache(int S, int E);
+void handle_trace(CacheSet *cache, int verbose, int s, int b, int S, int E, char *fname, int *hit, int *miss, int *evictions);
 
 int main(int argc, char *argv[])
 {
@@ -84,17 +88,17 @@ int main(int argc, char *argv[])
 
     // init cache set
     int S = pow(2, s);
-    CacheSet *cache = CreateCache(S, E);
+    CacheSet *cache = create_cache(S, E);
 
     // handle trace file
     int hit, miss, evictions;
-    handle_trace(cache, s, b, S, E, t, &hit, &miss, &evictions);
+    handle_trace(cache, verbose, s, b, S, E, t, &hit, &miss, &evictions);
 
     printSummary(hit, miss, evictions);
     return 0;
 }
 
-CacheSet *CreateCache(int S, int E)
+CacheSet *create_cache(int S, int E)
 {
     CacheSet *cache = (CacheSet *)calloc(S, sizeof(CacheSet));
 
@@ -112,7 +116,7 @@ CacheSet *CreateCache(int S, int E)
     return cache;
 }
 
-void handle_trace(CacheSet *cache, int s, int b, int S, int E, char *fname, int *hit, int *miss, int *evictions)
+void handle_trace(CacheSet *cache, int verbose, int s, int b, int S, int E, char *fname, int *hit, int *miss, int *evictions)
 {
     char *line = NULL;
     size_t len = 0;
@@ -123,23 +127,25 @@ void handle_trace(CacheSet *cache, int s, int b, int S, int E, char *fname, int 
     }
 
     char op;
+    char *end;
     unsigned long addr;
     unsigned long tag;
     unsigned long set;
     const unsigned long mask = (1 << s) - 1;
 
-    while (getline(line, &len, fp) != -1) {
+    while (getline(&line, &len, fp) != -1) {
         if (strlen(line) < 5 || line[0] != ' ') {
             continue;
         }
 
         // parse trace
         op = line[1];
-        addr = strtol(strsep(&line[3], ","), NULL, 16);
+        end = &line[3];
+        addr = strtol(strsep(&end, ","), NULL, 16);
         tag = addr >> (s + b);
         set = (addr >> b) & mask;
 
-        printf("%c %x, %x", op, tag, set);
+        printf("%c %lx,%lx\n", op, tag, set);
 
         switch (op) {
         case 'M':
@@ -153,5 +159,5 @@ void handle_trace(CacheSet *cache, int s, int b, int S, int E, char *fname, int 
         }
     }
 
-    close(fp);
+    fclose(fp);
 }
