@@ -1,6 +1,6 @@
 /*
  * mm-naive.c - The fastest, least memory-efficient malloc package.
- * 
+ *
  * In this naive approach, a block is allocated by simply incrementing
  * the brk pointer.  A block is pure payload. There are no headers or
  * footers.  Blocks are never coalesced or reused. Realloc is
@@ -18,10 +18,10 @@
 #include "mm.h"
 #include "memlib.h"
 
-/*********************************************************
- * NOTE TO STUDENTS: Before you do anything else, please
- * provide your team information in the following struct.
- ********************************************************/
+ /*********************************************************
+  * NOTE TO STUDENTS: Before you do anything else, please
+  * provide your team information in the following struct.
+  ********************************************************/
 team_t team = {
     /* Team name */
     "ateam",
@@ -41,18 +41,48 @@ team_t team = {
 /* rounds up to the nearest multiple of ALIGNMENT */
 #define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~0x7)
 
-
 #define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
+#define DSIZE   8
 
-/* 
+#define MAX(x, y)           ((x) > (y) ? (x) : (y))
+#define GET(p)              (*(size_t *)(p))
+#define PUT(p, val)         (*(size_t *)(p) = (val))
+#define PACK(size, alloc)   ((size) | (alloc))
+
+#define GET_SIZE(p)     (GET(p) & ~0x7)
+#define GET_ALLOC(p)    (GET(p) & ~0x1)
+
+#define HDRP(bp)    ((char *)(bp) - DSIZE)
+#define FTRP(bp)    ((char *)(bp) + GET_SIZE(HDRP(bp)) - 2*DSIZE)
+
+#define NEXT_BLKP(bp)   ((char *)(bp) + GET_SIZE((char *)(bp) - DSIZE))
+#define PREV_BLKP(bp)   ((char *)(bp) - GET_SIZE((char *)(bp) - 2*DSIZE))
+
+static void *extend_heap(size_t size);
+
+static char *heap_start;
+static char *heap_end;
+
+/*
  * mm_init - initialize the malloc package.
  */
 int mm_init(void)
 {
+    // create prologue and epilogue
+    if ((heap_start = mem_sbrk(2 * DSIZE)) == (void *)-1) {
+        return -1;
+    }
+    PUT(heap_start, PACK(DSIZE, 1));
+    PUT(heap_start + DSIZE, PACK(DSIZE, 1));
+    heap_start += DSIZE;
+
+    if (extend_heap(mem_pagesize()) == NULL) {
+        return -1;
+    }
     return 0;
 }
 
-/* 
+/*
  * mm_malloc - Allocate a block by incrementing the brk pointer.
  *     Always allocate a block whose size is a multiple of the alignment.
  */
@@ -61,7 +91,7 @@ void *mm_malloc(size_t size)
     int newsize = ALIGN(size + SIZE_T_SIZE);
     void *p = mem_sbrk(newsize);
     if (p == (void *)-1)
-	return NULL;
+        return NULL;
     else {
         *(size_t *)p = size;
         return (void *)((char *)p + SIZE_T_SIZE);
@@ -83,28 +113,29 @@ void *mm_realloc(void *ptr, size_t size)
     void *oldptr = ptr;
     void *newptr;
     size_t copySize;
-    
+
     newptr = mm_malloc(size);
     if (newptr == NULL)
-      return NULL;
+        return NULL;
     copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE);
     if (size < copySize)
-      copySize = size;
+        copySize = size;
     memcpy(newptr, oldptr, copySize);
     mm_free(oldptr);
     return newptr;
 }
 
+static void *extend_heap(size_t size)
+{
+    void *bp;
+    if ((bp = mem_sbrk(ALIGN(size))) == (void *)-1) {
+        return NULL;
+    }
 
+    PUT(HDRP(bp), PACK(size, 0));
+    PUT(FTRP(bp), PACK(size, 0));
+    PUT(HDRP(NEXT_BLKP(bp)), PACK(DSIZE, 1));
 
-
-
-
-
-
-
-
-
-
-
-
+    // TODO: coalesce if hte previous block was free
+    return bp;
+}
