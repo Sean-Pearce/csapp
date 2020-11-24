@@ -18,21 +18,21 @@
 #include "mm.h"
 #include "memlib.h"
 
- /*********************************************************
-  * NOTE TO STUDENTS: Before you do anything else, please
-  * provide your team information in the following struct.
-  ********************************************************/
+/*********************************************************
+ * NOTE TO STUDENTS: Before you do anything else, please
+ * provide your team information in the following struct.
+ ********************************************************/
 team_t team = {
-    /* Team name */
-    "ateam",
-    /* First member's full name */
-    "Harry Bovik",
-    /* First member's email address */
-    "bovik@cs.cmu.edu",
-    /* Second member's full name (leave blank if none) */
-    "",
-    /* Second member's email address (leave blank if none) */
-    ""
+        /* Team name */
+        "ateam",
+        /* First member's full name */
+        "Harry Bovik",
+        /* First member's email address */
+        "bovik@cs.cmu.edu",
+        /* Second member's full name (leave blank if none) */
+        "",
+        /* Second member's email address (leave blank if none) */
+        ""
 };
 
 /* single word (4) or double word (8) alignment */
@@ -74,7 +74,7 @@ static char *heap_end;
 int mm_init(void)
 {
     // create prologue and epilogue
-    if ((heap_start = mem_sbrk(2 * DSIZE)) == (void *)-1) {
+    if ((heap_start = mem_sbrk(2 * DSIZE)) == (void *) -1) {
         return -1;
     }
     PUT(heap_start, PACK(DSIZE, 1));
@@ -103,7 +103,7 @@ void *mm_malloc(size_t size)
         return NULL;
 
     // Adjust block size to include overhead and alignment requirements
-    asize = ALIGN(size + 2*DSIZE);
+    asize = ALIGN(size + 2 * DSIZE);
 
     // Search the free list for a fit
     if ((bp = find_fit(asize)) != NULL) {
@@ -142,7 +142,7 @@ void *mm_realloc(void *ptr, size_t size)
     newptr = mm_malloc(size);
     if (newptr == NULL)
         return NULL;
-    copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE);
+    copySize = *(size_t *) ((char *) oldptr - SIZE_T_SIZE);
     if (size < copySize)
         copySize = size;
     memcpy(newptr, oldptr, copySize);
@@ -153,7 +153,7 @@ void *mm_realloc(void *ptr, size_t size)
 static void *extend_heap(size_t size)
 {
     void *bp;
-    if ((bp = mem_sbrk(ALIGN(size))) == (void *)-1) {
+    if ((bp = mem_sbrk(ALIGN(size))) == (void *) -1) {
         return NULL;
     }
 
@@ -209,13 +209,13 @@ static void place(void *bp, size_t size)
 {
     size_t osize = GET_SIZE(HDRP(bp));
 
-    if (osize <= size + 2*DSIZE) {
+    if (osize <= size + 2 * DSIZE) {
         PUT(HDRP(bp), PACK(osize, 1));
         PUT(FTRP(bp), PACK(osize, 1));
     } else {
         PUT(HDRP(bp), PACK(size, 1));
         PUT(FTRP(bp), PACK(size, 1));
-        PUT(HDRP(NEXT_BLKP(bp)), PACK(osize-size, 0));
-        PUT(FTRP(NEXT_BLKP(bp)), PACK(osize-size, 0));
+        PUT(HDRP(NEXT_BLKP(bp)), PACK(osize - size, 0));
+        PUT(FTRP(NEXT_BLKP(bp)), PACK(osize - size, 0));
     }
 }
