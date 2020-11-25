@@ -67,6 +67,7 @@ static void place(void *bp, size_t size);
 
 static char *heap_start;
 static char *heap_end;
+static char *last_fit;
 
 /*
  * mm_init - initialize the malloc package.
@@ -81,6 +82,7 @@ int mm_init(void)
     PUT(heap_start + DSIZE, PACK(DSIZE, 1));
     heap_start += DSIZE;
     heap_end = heap_start;
+    last_fit = heap_start;
 
     if (extend_heap(CHUNKSIZE) == NULL) {
         return -1;
@@ -95,7 +97,6 @@ int mm_init(void)
 void *mm_malloc(size_t size)
 {
     size_t asize;
-    size_t extendsize;
     char *bp;
 
     // Ignore spurious requests
@@ -190,24 +191,35 @@ static void *coalesce(void *bp)
         bp = PREV_BLKP(bp);
     }
 
+    last_fit = HDRP(bp);
     return bp;
 }
 
 static void *find_fit(size_t size)
 {
-    char *p = heap_start;
-
+    char *p = last_fit;
     while (p != heap_end) {
-        if (GET_SIZE(p) >= size && !GET_ALLOC(p))
+        if (GET_SIZE(p) >= size && !GET_ALLOC(p)) {
             return p + DSIZE;
+        }
         p += GET_SIZE(p);
     }
+
+    p = heap_start;
+    while (p != last_fit) {
+        if (GET_SIZE(p) >= size && !GET_ALLOC(p)) {
+            return p + DSIZE;
+        }
+        p += GET_SIZE(p);
+    }
+
     return NULL;
 }
 
 static void place(void *bp, size_t size)
 {
     size_t osize = GET_SIZE(HDRP(bp));
+    last_fit = HDRP(bp);
 
     if (osize <= size + 2 * DSIZE) {
         PUT(HDRP(bp), PACK(osize, 1));
