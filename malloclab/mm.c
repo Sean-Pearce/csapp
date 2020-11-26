@@ -41,6 +41,7 @@ team_t team = {
 /* rounds up to the nearest multiple of ALIGNMENT */
 #define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~0x7)
 
+// TODO: pointer and size_t are WSIZE bytes
 #define WSIZE           4
 #define DSIZE           8
 #define CHUNKSIZE       1<<12
@@ -174,6 +175,10 @@ void *mm_realloc(void *bp, size_t size)
         place(p, asize, 0);
     } else {
         // try to extend
+        if (NEXT_BLKP(p) == mem_heap_hi())
+            if (extend_heap(MAX(asize - osize, CHUNKSIZE)) == NULL)
+                return NULL;
+
         if (!GET_ALLOC(NEXT_BLKP(p)) && GET_SIZE(NEXT_BLKP(p)) >= asize - osize) {
             delete(NEXT_BLKP(p));
             osize += GET_SIZE(NEXT_BLKP(p));
@@ -208,6 +213,11 @@ static void insert(void *p)
     idx = MIN(idx, CLASSNUM - 1);
 
     void *head = heap_start + 4 * DSIZE * idx;
+    void *q = NEXT(head);
+    while (q != head && size > GET_SIZE(q)) {
+        q = NEXT(q);
+    }
+    head = PREV(q);
     SET_PREV(NEXT(head), p);
     SET_NEXT(p, NEXT(head));
     SET_PREV(p, head);
@@ -315,7 +325,7 @@ static void *place(void *p, size_t size, size_t free)
         PUT(FTRP(p), PACK(osize, 1));
     } else {
         // 分割该空闲块，将较大的块放在空闲块的后部
-        if (size > 128 && free) {
+        if (size > 96 && free) {
             PUT(p, PACK(osize - size, 0));
             PUT(FTRP(p), PACK(osize - size, 0));
             PUT(NEXT_BLKP(p), PACK(size, 1));
