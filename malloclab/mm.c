@@ -72,7 +72,7 @@ team_t team = {
 static void *extend_heap(size_t size);
 static void *coalesce(void *p);
 static void *find_fit(size_t size);
-static void place(void *p, size_t size, size_t free);
+static void *place(void *p, size_t size, size_t free);
 static void delete(void *p);
 static void insert(void *p);
 
@@ -124,14 +124,14 @@ void *mm_malloc(size_t size)
 
     // Search the free list for a fit
     if ((p = find_fit(asize)) != NULL) {
-        place(p, asize, 1);
+        p = place(p, asize, 1);
         return p + DSIZE;
     }
 
     // No fit found. Get more memory and place the block
     if ((p = extend_heap(MAX(asize, CHUNKSIZE))) == NULL)
         return NULL;
-    place(p, asize, 1);
+    p = place(p, asize, 1);
     return p + DSIZE;
 }
 
@@ -301,7 +301,7 @@ static void *find_fit(size_t size)
 // 在空闲块中放置分配内存，如果剩余的空闲内存数目大于最小空闲块，则将其分离并插入到合适的空闲链表中
 // 输入 - 空闲块地址
 //       需要分配的内存大小
-static void place(void *p, size_t size, size_t free)
+static void *place(void *p, size_t size, size_t free)
 {
     size_t osize = GET_SIZE(p);
 
@@ -314,11 +314,22 @@ static void place(void *p, size_t size, size_t free)
         PUT(p, PACK(osize, 1));
         PUT(FTRP(p), PACK(osize, 1));
     } else {
-        // 分割该空闲块
-        PUT(p, PACK(size, 1));
-        PUT(FTRP(p), PACK(size, 1));
-        PUT(NEXT_BLKP(p), PACK(osize - size, 0));
-        PUT(FTRP(NEXT_BLKP(p)), PACK(osize - size, 0));
-        insert(NEXT_BLKP(p));
+        // 分割该空闲块，将较大的块放在空闲块的后部
+        if (size > 128 && free) {
+            PUT(p, PACK(osize - size, 0));
+            PUT(FTRP(p), PACK(osize - size, 0));
+            PUT(NEXT_BLKP(p), PACK(size, 1));
+            PUT(FTRP(NEXT_BLKP(p)), PACK(size, 1));
+            insert(p);
+            p = NEXT_BLKP(p);
+        } else {
+            PUT(p, PACK(size, 1));
+            PUT(FTRP(p), PACK(size, 1));
+            PUT(NEXT_BLKP(p), PACK(osize - size, 0));
+            PUT(FTRP(NEXT_BLKP(p)), PACK(osize - size, 0));
+            insert(NEXT_BLKP(p));
+        }
     }
+
+    return p;
 }
