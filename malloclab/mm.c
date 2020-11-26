@@ -41,12 +41,15 @@ team_t team = {
 /* rounds up to the nearest multiple of ALIGNMENT */
 #define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~0x7)
 
-#define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
+#define WSIZE           4
+#define DSIZE           8
+#define CHUNKSIZE       1<<12
+#define MINBLOCKSIZE    1<<5
 
-#define DSIZE       8
-#define CHUNKSIZE   1<<12
+#define CLASSNUM    9
 
 #define MAX(x, y)           ((x) > (y) ? (x) : (y))
+#define MIN(x, y)           ((x) < (y) ? (x) : (y))
 #define GET(p)              (*(size_t *)(p))
 #define PUT(p, val)         (*(size_t *)(p) = (val))
 #define PACK(size, alloc)   ((size) | (alloc))
@@ -55,34 +58,47 @@ team_t team = {
 #define GET_ALLOC(p)    (GET(p) & 0x1)
 
 #define HDRP(bp)    ((char *)(bp) - DSIZE)
-#define FTRP(bp)    ((char *)(bp) + GET_SIZE(HDRP(bp)) - 2*DSIZE)
+#define FTRP(p)     ((char *)(p) + GET_SIZE(p) - DSIZE)
 
-#define NEXT_BLKP(bp)   ((char *)(bp) + GET_SIZE((char *)(bp) - DSIZE))
-#define PREV_BLKP(bp)   ((char *)(bp) - GET_SIZE((char *)(bp) - 2*DSIZE))
+#define NEXT(p)     (*(char **)((char *)(p) + DSIZE))
+#define PREV(p)     (*(char **)((char *)(p) + DSIZE + WSIZE))
+
+#define SET_NEXT(p, np) (NEXT(p) = (np))
+#define SET_PREV(p, pp) (PREV(p) = (pp))
+
+#define NEXT_BLKP(p)   ((char *)(p) + GET_SIZE(p))
+#define PREV_BLKP(p)   ((char *)(p) - GET_SIZE((char *)(p) - DSIZE))
 
 static void *extend_heap(size_t size);
-static void *coalesce(void *bp);
+static void *coalesce(void *p);
 static void *find_fit(size_t size);
-static void place(void *bp, size_t size);
+static void place(void *p, size_t size, size_t free);
+static void delete(void *p);
+static void insert(void *p);
 
 static char *heap_start;
-static char *heap_end;
-static char *last_fit;
 
 /*
  * mm_init - initialize the malloc package.
  */
 int mm_init(void)
 {
-    // create prologue and epilogue
-    if ((heap_start = mem_sbrk(2 * DSIZE)) == (void *) -1) {
+    // create dummy blocks
+    if ((heap_start = mem_sbrk(4 * DSIZE * CLASSNUM + 2 * DSIZE)) == (void *) -1) {
         return -1;
     }
-    PUT(heap_start, PACK(DSIZE, 1));
-    PUT(heap_start + DSIZE, PACK(DSIZE, 1));
-    heap_start += DSIZE;
-    heap_end = heap_start;
-    last_fit = heap_start;
+
+    char *p = heap_start;
+    for (int i = 0; i < CLASSNUM; ++i) {
+        PUT(p, PACK(4 * DSIZE, 1));
+        PUT(FTRP(p), PACK(4 * DSIZE, 1));
+        SET_NEXT(p, p);
+        SET_PREV(p, p);
+        p = NEXT_BLKP(p);
+    }
+
+    PUT(p, PACK(DSIZE, 1));
+    PUT(NEXT_BLKP(p), PACK(DSIZE, 1));
 
     if (extend_heap(CHUNKSIZE) == NULL) {
         return -1;
@@ -97,7 +113,7 @@ int mm_init(void)
 void *mm_malloc(size_t size)
 {
     size_t asize;
-    char *bp;
+    char *p;
 
     // Ignore spurious requests
     if (size == 0)
@@ -107,16 +123,16 @@ void *mm_malloc(size_t size)
     asize = ALIGN(size + 2 * DSIZE);
 
     // Search the free list for a fit
-    if ((bp = find_fit(asize)) != NULL) {
-        place(bp, asize);
-        return bp;
+    if ((p = find_fit(asize)) != NULL) {
+        place(p, asize, 1);
+        return p + DSIZE;
     }
 
     // No fit found. Get more memory and place the block
-    if ((bp = extend_heap(MAX(asize, CHUNKSIZE))) == NULL)
+    if ((p = extend_heap(MAX(asize, CHUNKSIZE))) == NULL)
         return NULL;
-    place(bp, asize);
-    return bp;
+    place(p, asize, 1);
+    return p + DSIZE;
 }
 
 /*
@@ -127,107 +143,182 @@ void mm_free(void *bp)
     size_t size = GET_SIZE(HDRP(bp));
 
     PUT(HDRP(bp), PACK(size, 0));
-    PUT(FTRP(bp), PACK(size, 0));
-    coalesce(bp);
+    PUT(FTRP(HDRP(bp)), PACK(size, 0));
+    coalesce(HDRP(bp));
 }
 
 /*
  * mm_realloc - Implemented simply in terms of mm_malloc and mm_free
  */
-void *mm_realloc(void *ptr, size_t size)
+void *mm_realloc(void *bp, size_t size)
 {
-    void *oldptr = ptr;
-    void *newptr;
-    size_t copySize;
+    void *p = HDRP(bp);
+    void *newptr = bp;
+    size_t osize;
+    size_t asize;
 
-    newptr = mm_malloc(size);
-    if (newptr == NULL)
+    // bp is NULL
+    if (bp == NULL)
+        return mm_malloc(size);
+
+    // size is zero
+    if (size == 0) {
+        mm_free(bp);
         return NULL;
-    copySize = *(size_t *) ((char *) oldptr - SIZE_T_SIZE);
-    if (size < copySize)
-        copySize = size;
-    memcpy(newptr, oldptr, copySize);
-    mm_free(oldptr);
+    }
+
+    osize = GET_SIZE(p);
+    asize = ALIGN(size + 2 * DSIZE);
+    if (osize >= asize) {
+        // try to shrink
+        place(p, asize, 0);
+    } else {
+        // try to extend
+        if (!GET_ALLOC(NEXT_BLKP(p)) && GET_SIZE(NEXT_BLKP(p)) >= asize - osize) {
+            delete(NEXT_BLKP(p));
+            osize += GET_SIZE(NEXT_BLKP(p));
+            PUT(p, PACK(osize, 1));
+            PUT(FTRP(p), PACK(osize, 1));
+            place(p, asize, 0);
+        } else {
+            newptr = mm_malloc(size);
+            if (newptr == NULL)
+                return NULL;
+            memcpy(newptr, bp, osize - 2 * DSIZE);
+            mm_free(bp);
+        }
+    }
+
     return newptr;
 }
 
+static void delete(void *p)
+{
+    SET_NEXT(PREV(p), NEXT(p));
+    SET_PREV(NEXT(p), PREV(p));
+}
+
+static void insert(void *p)
+{
+    size_t size = GET_SIZE(p);
+    int idx = 0;
+    while (size > (MINBLOCKSIZE << idx)) {
+        idx++;
+    }
+    idx = MIN(idx, CLASSNUM - 1);
+
+    void *head = heap_start + 4 * DSIZE * idx;
+    SET_PREV(NEXT(head), p);
+    SET_NEXT(p, NEXT(head));
+    SET_PREV(p, head);
+    SET_NEXT(head, p);
+}
+
+// 扩展堆的大小
+// 输入 - 需要增加的字节数
+// 输出 - 扩展得到的空闲内存块的地址
 static void *extend_heap(size_t size)
 {
-    void *bp;
-    if ((bp = mem_sbrk(ALIGN(size))) == (void *) -1) {
+    void *p;
+    if ((p = mem_sbrk(ALIGN(size))) == (void *) -1) {
         return NULL;
     }
 
-    PUT(HDRP(bp), PACK(size, 0));
-    PUT(FTRP(bp), PACK(size, 0));
-    PUT(HDRP(NEXT_BLKP(bp)), PACK(DSIZE, 1));
-    heap_end += size;
+    p = HDRP(p);
+    PUT(p, PACK(size, 0));
+    PUT(FTRP(p), PACK(size, 0));
+    PUT(NEXT_BLKP(p), PACK(DSIZE, 1));
 
-    return coalesce(bp);
+    // 可能需要与前一个块合并
+    return coalesce(p);
 }
 
-static void *coalesce(void *bp)
+// 如果可能，合并空闲块
+// 输入 - 空闲块的地址，发起调用前该空闲块必须已经从空闲链表中移除
+// 输出 - 合并后的空闲块的地址，且此空闲块已经插入到对应的空闲链表中
+static void *coalesce(void *p)
 {
-    size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
-    size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
-    size_t size = GET_SIZE(HDRP(bp));
+    size_t prev_alloc = GET_ALLOC(PREV_BLKP(p));
+    size_t next_alloc = GET_ALLOC(NEXT_BLKP(p));
+    size_t size = GET_SIZE(p);
+
+    if (!prev_alloc)
+        delete(PREV_BLKP(p));
+    if (!next_alloc)
+        delete(NEXT_BLKP(p));
 
     if (prev_alloc && next_alloc) {
-        return bp;
+        // nop
     } else if (prev_alloc && !next_alloc) {
-        size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
-        PUT(HDRP(bp), PACK(size, 0));
-        PUT(FTRP(bp), PACK(size, 0));
+        size += GET_SIZE(NEXT_BLKP(p));
+        PUT(p, PACK(size, 0));
+        PUT(FTRP(p), PACK(size, 0));
     } else if (!prev_alloc && next_alloc) {
-        size += GET_SIZE(HDRP(PREV_BLKP(bp)));
-        PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
-        PUT(FTRP(bp), PACK(size, 0));
-        bp = PREV_BLKP(bp);
+        size += GET_SIZE(PREV_BLKP(p));
+        PUT(PREV_BLKP(p), PACK(size, 0));
+        PUT(FTRP(p), PACK(size, 0));
+        p = PREV_BLKP(p);
     } else {
-        size += GET_SIZE(HDRP(PREV_BLKP(bp))) +
-                GET_SIZE(FTRP(NEXT_BLKP(bp)));
-        PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
-        PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
-        bp = PREV_BLKP(bp);
+        size += GET_SIZE(PREV_BLKP(p)) +
+                GET_SIZE(FTRP(NEXT_BLKP(p)));
+        PUT(PREV_BLKP(p), PACK(size, 0));
+        PUT(FTRP(NEXT_BLKP(p)), PACK(size, 0));
+        p = PREV_BLKP(p);
     }
 
-    last_fit = HDRP(bp);
-    return bp;
+    insert(p);
+    return p;
 }
 
+// 寻找满足所需内存大小的空闲块，不会把空闲块从链表中移除
+// 输入 - 所需内存大小
+// 输出 - 空闲内存块的地址，如果没有找到则返回 NULL
 static void *find_fit(size_t size)
 {
-    char *p = last_fit;
-    while (p != heap_end) {
-        if (GET_SIZE(p) >= size && !GET_ALLOC(p)) {
-            return p + DSIZE;
-        }
-        p += GET_SIZE(p);
+    int idx = 0;
+    while (size > (MINBLOCKSIZE << idx)) {
+        idx++;
     }
+    idx = MIN(idx, CLASSNUM - 1);
 
-    p = heap_start;
-    while (p != last_fit) {
-        if (GET_SIZE(p) >= size && !GET_ALLOC(p)) {
-            return p + DSIZE;
+    char *head;
+    char *p;
+    while (idx < CLASSNUM) {
+        head = heap_start + 4 * DSIZE * idx;
+        p = NEXT(head);
+        while (p != head) {
+            if (!GET_ALLOC(p) && GET_SIZE(p) >= size) {
+                return p;
+            }
+            p = NEXT(p);
         }
-        p += GET_SIZE(p);
+        idx++;
     }
 
     return NULL;
 }
 
-static void place(void *bp, size_t size)
+// 在空闲块中放置分配内存，如果剩余的空闲内存数目大于最小空闲块，则将其分离并插入到合适的空闲链表中
+// 输入 - 空闲块地址
+//       需要分配的内存大小
+static void place(void *p, size_t size, size_t free)
 {
-    size_t osize = GET_SIZE(HDRP(bp));
-    last_fit = HDRP(bp);
+    size_t osize = GET_SIZE(p);
 
-    if (osize <= size + 2 * DSIZE) {
-        PUT(HDRP(bp), PACK(osize, 1));
-        PUT(FTRP(bp), PACK(osize, 1));
+    if (free) {
+        delete(p);
+    }
+
+    if (osize <= size + 4 * DSIZE) {
+        // 剩余空间小于最小空闲块
+        PUT(p, PACK(osize, 1));
+        PUT(FTRP(p), PACK(osize, 1));
     } else {
-        PUT(HDRP(bp), PACK(size, 1));
-        PUT(FTRP(bp), PACK(size, 1));
-        PUT(HDRP(NEXT_BLKP(bp)), PACK(osize - size, 0));
-        PUT(FTRP(NEXT_BLKP(bp)), PACK(osize - size, 0));
+        // 分割该空闲块
+        PUT(p, PACK(size, 1));
+        PUT(FTRP(p), PACK(size, 1));
+        PUT(NEXT_BLKP(p), PACK(osize - size, 0));
+        PUT(FTRP(NEXT_BLKP(p)), PACK(osize - size, 0));
+        insert(NEXT_BLKP(p));
     }
 }
