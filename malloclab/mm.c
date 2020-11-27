@@ -41,13 +41,12 @@ team_t team = {
 /* rounds up to the nearest multiple of ALIGNMENT */
 #define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~0x7)
 
-// TODO: pointer and size_t are WSIZE bytes
 #define WSIZE           4
-#define DSIZE           8
-#define CHUNKSIZE       1<<12
-#define MINBLOCKSIZE    1<<5
+#define DSIZE           (2 * WSIZE)
+#define CHUNKSIZE       (1 << 12)
+#define MINBLOCKSIZE    (4 * WSIZE)
 
-#define CLASSNUM    9
+#define CLASSNUM    10
 
 #define MAX(x, y)           ((x) > (y) ? (x) : (y))
 #define MIN(x, y)           ((x) < (y) ? (x) : (y))
@@ -58,17 +57,17 @@ team_t team = {
 #define GET_SIZE(p)     (GET(p) & ~0x7)
 #define GET_ALLOC(p)    (GET(p) & 0x1)
 
-#define HDRP(bp)    ((char *)(bp) - DSIZE)
-#define FTRP(p)     ((char *)(p) + GET_SIZE(p) - DSIZE)
+#define HDRP(bp)    ((char *)(bp) - WSIZE)
+#define FTRP(p)     ((char *)(p) + GET_SIZE(p) - WSIZE)
 
-#define NEXT(p)     (*(char **)((char *)(p) + DSIZE))
-#define PREV(p)     (*(char **)((char *)(p) + DSIZE + WSIZE))
+#define NEXT(p)     (*(char **)((char *)(p) + WSIZE))
+#define PREV(p)     (*(char **)((char *)(p) + DSIZE))
 
 #define SET_NEXT(p, np) (NEXT(p) = (np))
 #define SET_PREV(p, pp) (PREV(p) = (pp))
 
 #define NEXT_BLKP(p)   ((char *)(p) + GET_SIZE(p))
-#define PREV_BLKP(p)   ((char *)(p) - GET_SIZE((char *)(p) - DSIZE))
+#define PREV_BLKP(p)   ((char *)(p) - GET_SIZE((char *)(p) - WSIZE))
 
 static void *extend_heap(size_t size);
 static void *coalesce(void *p);
@@ -85,21 +84,23 @@ static char *heap_start;
 int mm_init(void)
 {
     // create dummy blocks
-    if ((heap_start = mem_sbrk(4 * DSIZE * CLASSNUM + 2 * DSIZE)) == (void *) -1) {
+    if ((heap_start = mem_sbrk(4 * WSIZE * CLASSNUM + 4 * WSIZE)) == (void *) -1) {
         return -1;
     }
 
     char *p = heap_start;
     for (int i = 0; i < CLASSNUM; ++i) {
-        PUT(p, PACK(4 * DSIZE, 1));
-        PUT(FTRP(p), PACK(4 * DSIZE, 1));
+        PUT(p, PACK(4 * WSIZE, 1));
+        PUT(FTRP(p), PACK(4 * WSIZE, 1));
         SET_NEXT(p, p);
         SET_PREV(p, p);
         p = NEXT_BLKP(p);
     }
 
-    PUT(p, PACK(DSIZE, 1));
-    PUT(NEXT_BLKP(p), PACK(DSIZE, 1));
+    PUT(p, PACK(WSIZE, 0));                     // align padding
+    PUT(p + WSIZE, PACK(DSIZE, 1));          // starting block header
+    PUT(p + 2 * WSIZE, PACK(DSIZE, 1));      // starting block footer
+    PUT(p + 3 * WSIZE, PACK(WSIZE, 1));      // ending block
 
     if (extend_heap(CHUNKSIZE) == NULL) {
         return -1;
@@ -121,19 +122,19 @@ void *mm_malloc(size_t size)
         return NULL;
 
     // Adjust block size to include overhead and alignment requirements
-    asize = ALIGN(size + 2 * DSIZE);
+    asize = ALIGN(size + DSIZE);
 
     // Search the free list for a fit
     if ((p = find_fit(asize)) != NULL) {
         p = place(p, asize, 1);
-        return p + DSIZE;
+        return p + WSIZE;
     }
 
     // No fit found. Get more memory and place the block
     if ((p = extend_heap(MAX(asize, CHUNKSIZE))) == NULL)
         return NULL;
     p = place(p, asize, 1);
-    return p + DSIZE;
+    return p + WSIZE;
 }
 
 /*
@@ -169,7 +170,7 @@ void *mm_realloc(void *bp, size_t size)
     }
 
     osize = GET_SIZE(p);
-    asize = ALIGN(size + 2 * DSIZE);
+    asize = ALIGN(size + DSIZE);
     if (osize >= asize) {
         // try to shrink
         place(p, asize, 0);
@@ -189,7 +190,7 @@ void *mm_realloc(void *bp, size_t size)
             newptr = mm_malloc(size);
             if (newptr == NULL)
                 return NULL;
-            memcpy(newptr, bp, osize - 2 * DSIZE);
+            memcpy(newptr, bp, osize - DSIZE);
             mm_free(bp);
         }
     }
@@ -212,7 +213,7 @@ static void insert(void *p)
     }
     idx = MIN(idx, CLASSNUM - 1);
 
-    void *head = heap_start + 4 * DSIZE * idx;
+    void *head = heap_start + 4 * WSIZE * idx;
     void *q = NEXT(head);
     while (q != head && size > GET_SIZE(q)) {
         q = NEXT(q);
@@ -237,7 +238,7 @@ static void *extend_heap(size_t size)
     p = HDRP(p);
     PUT(p, PACK(size, 0));
     PUT(FTRP(p), PACK(size, 0));
-    PUT(NEXT_BLKP(p), PACK(DSIZE, 1));
+    PUT(NEXT_BLKP(p), PACK(WSIZE, 1));
 
     // 可能需要与前一个块合并
     return coalesce(p);
@@ -294,7 +295,7 @@ static void *find_fit(size_t size)
     char *head;
     char *p;
     while (idx < CLASSNUM) {
-        head = heap_start + 4 * DSIZE * idx;
+        head = heap_start + 4 * WSIZE * idx;
         p = NEXT(head);
         while (p != head) {
             if (!GET_ALLOC(p) && GET_SIZE(p) >= size) {
@@ -319,7 +320,7 @@ static void *place(void *p, size_t size, size_t free)
         delete(p);
     }
 
-    if (osize <= size + 4 * DSIZE) {
+    if (osize <= size + MINBLOCKSIZE) {
         // 剩余空间小于最小空闲块
         PUT(p, PACK(osize, 1));
         PUT(FTRP(p), PACK(osize, 1));
